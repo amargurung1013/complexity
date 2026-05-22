@@ -1,0 +1,13 @@
+[project]
+name = "algo-bench-backend"
+version = "0.1.0"
+description = "FastAPI backend for the AlgoBench sorting benchmark dashboard."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.136.1",
+    "langchain-groq>=1.1.2",
+    "langgraph>=1.2.1",
+    "pydantic-settings>=2.14.1",
+    "uvicorn[standard]>=0.47.0",
+]
