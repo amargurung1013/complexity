@@ -166,15 +166,32 @@ def _parse_plan(raw_text: str, code: str) -> BenchmarkPlan:
 
 def _fallback_analysis(request: CustomBenchmarkRequest, agent_enabled: bool = False) -> FunctionAnalysis:
     readable_name = request.function_name.replace("_", " ")
+    family = _classify_from_name(request.function_name)
     return FunctionAnalysis(
         summary=(
             f"`{request.function_name}` is benchmarked with generated {request.input_kind} input "
             f"at size {request.input_size}."
         ),
-        complexity="Unknown",
+        complexity=family["time_complexity"],
         brief=f"This appears to run the {readable_name} function and measure its runtime and peak memory.",
-        time_complexity="Unknown",
-        space_complexity="Unknown",
+        time_complexity=family["time_complexity"],
+        space_complexity=family["space_complexity"],
+        algorithm_family=family["family"],
+        strategy=family["strategy"],
+        stability=family["stability"],
+        storage_model=family["storage_model"],
+        beginner_explanation=(
+            f"`{request.function_name}` appears to solve {readable_name}. Run it once with Groq enabled "
+            "for a deeper explanation."
+        ),
+        interview_explanation=(
+            f"Describe `{request.function_name}` by its input shape, dominant operation, and measured "
+            "growth across increasing input sizes."
+        ),
+        professor_explanation=(
+            f"The selected procedure `{request.function_name}` should be analyzed by recurrence, loop "
+            "nesting, and auxiliary state."
+        ),
         input_contract=f"Input kind: {request.input_kind}; size: {request.input_size}.",
         notes=[
             "Agent analysis is unavailable until GROQ_API_KEY is configured."
@@ -189,6 +206,66 @@ def _fallback_analysis(request: CustomBenchmarkRequest, agent_enabled: bool = Fa
     )
 
 
+def _classify_from_name(function_name: str) -> dict[str, str]:
+    lowered = function_name.lower()
+    joined = lowered.replace("_", " ")
+
+    if "substring" in lowered or "subarray" in lowered or "window" in lowered:
+        return {
+            "family": "Sliding window",
+            "strategy": "Maintains a moving left/right boundary and updates state as the window changes.",
+            "time_complexity": "O(n)",
+            "space_complexity": "O(k)",
+            "stability": "Not applicable",
+            "storage_model": "Uses auxiliary lookup state",
+        }
+    if "binary" in lowered or "search" in lowered:
+        return {
+            "family": "Search algorithm",
+            "strategy": "Narrows or scans the search space until a target condition is found.",
+            "time_complexity": "O(n)",
+            "space_complexity": "O(1)",
+            "stability": "Not applicable",
+            "storage_model": "Usually constant auxiliary storage",
+        }
+    if "dfs" in lowered or "depth" in joined:
+        return {
+            "family": "Graph traversal",
+            "strategy": "Explores reachable states depth-first using recursion or an explicit stack.",
+            "time_complexity": "O(V + E)",
+            "space_complexity": "O(V)",
+            "stability": "Not applicable",
+            "storage_model": "Uses visited state and call/work stack",
+        }
+    if "bfs" in lowered or "breadth" in joined:
+        return {
+            "family": "Graph traversal",
+            "strategy": "Explores reachable states breadth-first using a queue.",
+            "time_complexity": "O(V + E)",
+            "space_complexity": "O(V)",
+            "stability": "Not applicable",
+            "storage_model": "Uses visited state and queue storage",
+        }
+    if "dp" in lowered or "memo" in lowered or "cache" in lowered:
+        return {
+            "family": "Dynamic programming",
+            "strategy": "Stores overlapping subproblem results to avoid repeated computation.",
+            "time_complexity": "Depends on state count",
+            "space_complexity": "Depends on memo/table size",
+            "stability": "Not applicable",
+            "storage_model": "Uses memoization or tabulation storage",
+        }
+
+    return {
+        "family": "Code-derived algorithm",
+        "strategy": "Classified from the selected function name, signature, and benchmark harness.",
+        "time_complexity": "Requires measurement",
+        "space_complexity": "Requires measurement",
+        "stability": "Not applicable",
+        "storage_model": "Depends on implementation",
+    }
+
+
 def _parse_analysis(raw_text: str, request: CustomBenchmarkRequest) -> FunctionAnalysis:
     start = raw_text.find("{")
     end = raw_text.rfind("}")
@@ -200,6 +277,8 @@ def _parse_analysis(raw_text: str, request: CustomBenchmarkRequest) -> FunctionA
     except json.JSONDecodeError:
         return _fallback_analysis(request, agent_enabled=True)
 
+    fallback = _classify_from_name(request.function_name)
+
     return FunctionAnalysis(
 
     summary=str(
@@ -210,7 +289,7 @@ def _parse_analysis(raw_text: str, request: CustomBenchmarkRequest) -> FunctionA
 
     complexity=str(
         payload.get("time_complexity")
-        or "Unknown"
+        or fallback["time_complexity"]
     ),
 
     brief=str(
@@ -222,12 +301,51 @@ def _parse_analysis(raw_text: str, request: CustomBenchmarkRequest) -> FunctionA
 
     time_complexity=str(
         payload.get("time_complexity")
-        or "Unknown"
+        or fallback["time_complexity"]
     ),
 
     space_complexity=str(
         payload.get("space_complexity")
-        or "Unknown"
+        or fallback["space_complexity"]
+    ),
+
+    algorithm_family=str(
+        payload.get("algorithm_family")
+        or payload.get("classification")
+        or fallback["family"]
+    ),
+
+    strategy=str(
+        payload.get("strategy")
+        or payload.get("operational_invariant")
+        or fallback["strategy"]
+    ),
+
+    stability=str(
+        payload.get("stability")
+        or fallback["stability"]
+    ),
+
+    storage_model=str(
+        payload.get("storage_model")
+        or payload.get("memory_model")
+        or fallback["storage_model"]
+    ),
+
+    beginner_explanation=str(
+        payload.get("beginner_explanation")
+        or payload.get("eli5")
+        or ""
+    ),
+
+    interview_explanation=str(
+        payload.get("interview_explanation")
+        or ""
+    ),
+
+    professor_explanation=str(
+        payload.get("professor_explanation")
+        or ""
     ),
 
     input_contract=str(
@@ -266,9 +384,18 @@ def analyze_function(request: CustomBenchmarkRequest) -> FunctionAnalysis:
 
                     "{\n"
                     "  \"function_analysis\": \"Explain what the function does in detail.\",\n"
+                    "  \"algorithm_family\": \"Specific family, e.g. Sliding window, Dynamic programming, Graph traversal\",\n"
+                    "  \"strategy\": \"The invariant or core technique in one precise sentence.\",\n"
                     "  \"time_complexity\": \"Big-O time complexity\",\n"
                     "  \"space_complexity\": \"Big-O space complexity\",\n"
-                    "  \"reason\": \"Why the complexities are correct\"\n"
+                    "  \"stability\": \"Stable, not stable, or not applicable\",\n"
+                    "  \"storage_model\": \"How auxiliary memory is used\",\n"
+                    "  \"beginner_explanation\": \"Plain language explanation for a beginner\",\n"
+                    "  \"interview_explanation\": \"Concise interview answer\",\n"
+                    "  \"professor_explanation\": \"Formal CS terminology explanation\",\n"
+                    "  \"reason\": \"Why the complexities are correct\",\n"
+                    "  \"notes\": [\"up to five useful notes\"],\n"
+                    "  \"suggestions\": [\"up to five improvement or testing suggestions\"]\n"
                     "}\n\n"
 
                     "Rules:\n"
@@ -338,11 +465,46 @@ def analyze_function(request: CustomBenchmarkRequest) -> FunctionAnalysis:
 
             space_complexity=formatted_sc,
 
+            algorithm_family=payload.get(
+                "algorithm_family",
+                _classify_from_name(request.function_name)["family"]
+            ),
+
+            strategy=payload.get(
+                "strategy",
+                _classify_from_name(request.function_name)["strategy"]
+            ),
+
+            stability=payload.get(
+                "stability",
+                _classify_from_name(request.function_name)["stability"]
+            ),
+
+            storage_model=payload.get(
+                "storage_model",
+                _classify_from_name(request.function_name)["storage_model"]
+            ),
+
+            beginner_explanation=payload.get(
+                "beginner_explanation",
+                ""
+            ),
+
+            interview_explanation=payload.get(
+                "interview_explanation",
+                ""
+            ),
+
+            professor_explanation=payload.get(
+                "professor_explanation",
+                ""
+            ),
+
             input_contract="Automatically generated benchmark input.",
 
-            notes=[],
+            notes=[str(item) for item in payload.get("notes", [])][:5],
 
-            suggestions=[],
+            suggestions=[str(item) for item in payload.get("suggestions", [])][:5],
 
             agent_enabled=True
         )

@@ -48,7 +48,7 @@ except ModuleNotFoundError:
         FunctionAnalysis,
     )
 
-app = FastAPI(title="AlgoBench API")
+app = FastAPI(title="complexity API")
 
 app.add_middleware(
     CORSMiddleware,

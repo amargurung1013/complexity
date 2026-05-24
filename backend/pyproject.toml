@@ -1,7 +1,7 @@
 [project]
-name = "algo-bench-backend"
+name = "complexity-backend"
 version = "0.1.0"
-description = "FastAPI backend for the AlgoBench sorting benchmark dashboard."
+description = "FastAPI backend for the complexity algorithm analysis workbench."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

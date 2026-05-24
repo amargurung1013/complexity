@@ -7,6 +7,13 @@ class FunctionAnalysis(BaseModel):
     brief: str = ""
     time_complexity: str = "Unknown"
     space_complexity: str = "Unknown"
+    algorithm_family: str = "General algorithm"
+    strategy: str = "Analyze the code structure and benchmark behavior."
+    stability: str = "Not applicable"
+    storage_model: str = "Depends on implementation"
+    beginner_explanation: str = ""
+    interview_explanation: str = ""
+    professor_explanation: str = ""
     input_contract: str
     notes: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)

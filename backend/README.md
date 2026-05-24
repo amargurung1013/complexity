@@ -1,6 +1,6 @@
-# AlgoBench Backend
+# complexity Backend
 
-FastAPI service for running sorting algorithm benchmarks.
+FastAPI service for planning, benchmarking, and explaining Python algorithm functions.
 
 ## Setup
 
@@ -8,7 +8,7 @@ FastAPI service for running sorting algorithm benchmarks.
 uv sync
 ```
 
-Copy `.env.example` to `.env` and add your Groq key to enable the analyzer agent:
+Add your Groq key to `.env` to enable AI classification and explanations:
 
 ```bash
 GROQ_API_KEY=your_key_here
@@ -19,12 +19,6 @@ GROQ_MODEL=llama-3.3-70b-versatile
 
 ```bash
 uv run uvicorn app.main:app --reload
-```
-
-If you are already inside `backend/app`, use:
-
-```bash
-uv run uvicorn main:app --reload
 ```
 
 The API starts on `http://127.0.0.1:8000` by default.

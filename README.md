@@ -1,21 +1,35 @@
-# AlgoBench
+# complexity
 
-AlgoBench is a small full-stack benchmark dashboard:
-
-- `backend/` contains the FastAPI API and benchmark runner.
-- `frontend/` contains the Next.js dashboard UI.
+complexity is a full-stack algorithm analysis workbench. Paste a Python function, run a benchmark, and review complexity trends, memory behavior, execution traces, stack frames, heatmaps, and Groq-generated study notes.
 
 ## Project Layout
 
 ```text
 .
-├── backend/          # FastAPI service
-│   ├── api/          # API routes, schemas, and benchmark engine
+├── backend/
+│   ├── app/
+│   │   ├── analyzer_agent.py
+│   │   ├── benchmark.py
+│   │   ├── custom_runner.py
+│   │   ├── main.py
+│   │   └── schemas.py
 │   ├── pyproject.toml
 │   └── uv.lock
-└── frontend/         # Next.js app
-    ├── app/          # App Router pages and styles
-    ├── src/          # Reusable frontend components
+└── frontend/
+    ├── app/
+    │   ├── globals.css
+    │   ├── layout.tsx
+    │   └── page.tsx
+    ├── src/
+    │   ├── components/
+    │   │   ├── AlgoChart.tsx
+    │   │   ├── MetricCard.tsx
+    │   │   └── Sidebar.tsx
+    │   ├── lib/
+    │   │   ├── format.ts
+    │   │   └── navigation.ts
+    │   └── types/
+    │       └── benchmark.ts
     ├── package.json
     └── package-lock.json
 ```
@@ -26,7 +40,7 @@ Start the API:
 
 ```bash
 cd backend
-uv run uvicorn api.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 Start the frontend in another terminal:
@@ -36,4 +50,4 @@ cd frontend
 npm run dev
 ```
 
-The dashboard expects the API at `http://127.0.0.1:8000` by default. To use a different API URL, set `NEXT_PUBLIC_API_URL` when starting the frontend.
+The app expects the API at `http://127.0.0.1:8000` by default. Set `NEXT_PUBLIC_API_URL` to use a different backend URL.

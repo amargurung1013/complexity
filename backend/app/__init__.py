@@ -1,1 +1,1 @@
-"""AlgoBench backend package."""
+"""complexity backend package."""
