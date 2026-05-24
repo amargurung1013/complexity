@@ -23,11 +23,13 @@ class FunctionAnalysis(BaseModel):
 class BenchmarkPlan(BaseModel):
     algorithm_name: str
     function_name: str
-    input_kind: str = Field(pattern="^(list_int|int|string|none|list_int_and_target|two_ints|graph_start_end|signature_args|agent_harness)$")
+    input_kind: str = Field(
+        default="list_int",
+        pattern="^(list_int|int|string|none|list_int_and_target|two_ints|graph_start_end|signature_args|agent_harness)$"
+    )
     reason: str
     agent_enabled: bool = False
     harness_code: str | None = Field(default=None, max_length=12_000)
-
 
 class BenchmarkRequest(BaseModel):
     algorithm_name: str

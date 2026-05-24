@@ -68,6 +68,24 @@ ALGORITHMS: dict[str, SortAlgorithm] = {
     "tim_sort": tim_sort,
 }
 
+def sanitize_code(code: str) -> str:
+
+    code = code.strip()
+
+    if code.startswith("```"):
+
+        lines = code.splitlines()
+
+        # Remove opening fence
+        lines = lines[1:]
+
+        # Remove closing fence
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        code = "\n".join(lines)
+
+    return code.strip()
 
 @app.get("/health")
 async def health() -> dict[str, str]:
@@ -102,8 +120,12 @@ async def run_custom_algorithm_benchmark(request: CustomBenchmarkRequest) -> Ben
 
 @app.post("/benchmark/analyze", response_model=BenchmarkResult)
 async def analyze_and_benchmark_python(request: AutoBenchmarkRequest) -> BenchmarkResult:
-    plan = plan_benchmark(request.code, request.analyze_with_agent)
+    clean_code = sanitize_code(request.code)
 
+    plan = plan_benchmark(
+        clean_code,
+        request.analyze_with_agent
+    )
     try:
         return _run_planned_benchmark(request, plan)
     except TimeoutError as exc:
@@ -121,7 +143,7 @@ async def analyze_and_benchmark_python(request: AutoBenchmarkRequest) -> Benchma
         raise HTTPException(
             status_code=400,
             detail=(
-                "I could not create a runnable benchmark plan for this code yet. "
+                f"I could not create a runnable benchmark plan for this code yet (Error: {exc}). "
                 "Try adding one public function with clear parameter names like "
                 "`values`, `n`, `text`, or `graph, start, end`."
             ),
@@ -135,7 +157,7 @@ def _run_planned_benchmark(
     custom_request = CustomBenchmarkRequest(
         algorithm_name=plan.algorithm_name,
         function_name=plan.function_name,
-        code=request.code,
+        code=sanitize_code(request.code),
         input_size=request.input_size,
         input_kind=plan.input_kind,
         timeout_seconds=request.timeout_seconds,
@@ -181,3 +203,4 @@ def _timeout_benchmark_result(
             agent_enabled=plan.agent_enabled,
         ),
     )
+

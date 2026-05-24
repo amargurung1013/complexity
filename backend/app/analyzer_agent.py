@@ -72,7 +72,13 @@ class AnalyzerState(TypedDict):
     analysis: FunctionAnalysis | None
 
 
-def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> list[str]:
+    if isinstance(node, ast.ClassDef):
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+                return [arg.arg for arg in item.args.args if arg.arg != "self"]
+        return []
+
     return [arg.arg for arg in node.args.args]
 
 
@@ -90,8 +96,35 @@ def _infer_input_kind(function_name: str, arg_names: list[str]) -> str:
 
     second = arg_names[1].lower()
     if len(arg_names) == 2:
-        if first in {"nums", "values", "arr", "array", "items", "list"} and second == "target":
+
+    # List + target patterns
+        if (
+            first in {
+                "nums",
+                "values",
+                "arr",
+                "array",
+                "items",
+                "list"
+            }
+            and second == "target"
+        ):
             return "list_int_and_target"
+
+        # Two string patterns
+        if (
+            first in {"s", "text", "string", "word"}
+            and second in {"t", "pattern", "target", "substring"}
+        ):
+            return "two_strings"
+
+        # Generic graph/path pattern
+        if (
+            first in {"graph", "grid", "network"}
+            and second in {"start", "source"}
+        ):
+            return "graph_start_end"
+
         return "two_ints"
 
     lowered_args = [name.lower() for name in arg_names]
@@ -118,7 +151,7 @@ def _fallback_plan(code: str, agent_enabled: bool = False, reason: str | None = 
     functions = [
         node
         for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not node.name.startswith("_")
     ]
 
     if not functions:
@@ -144,6 +177,12 @@ def _fallback_plan(code: str, agent_enabled: bool = False, reason: str | None = 
     )
 
 
+VALID_INPUT_KINDS = {
+    "list_int", "int", "string", "none",
+    "list_int_and_target", "two_ints",
+    "graph_start_end", "signature_args", "agent_harness","two_strings",
+}
+
 def _parse_plan(raw_text: str, code: str) -> BenchmarkPlan:
     start = raw_text.find("{")
     end = raw_text.rfind("}")
@@ -152,17 +191,20 @@ def _parse_plan(raw_text: str, code: str) -> BenchmarkPlan:
 
     try:
         payload = json.loads(raw_text[start : end + 1])
+        
+        raw_kind = str(payload.get("input_kind") or "list_int")
+        input_kind = raw_kind if raw_kind in VALID_INPUT_KINDS else "signature_args"
+
         return BenchmarkPlan(
             algorithm_name=str(payload.get("algorithm_name") or "Python function")[:80],
             function_name=str(payload["function_name"])[:80],
-            input_kind=str(payload.get("input_kind") or "list_int"),
+            input_kind=input_kind,
             reason=str(payload.get("reason") or "Groq selected the function and generated input."),
             agent_enabled=True,
             harness_code=payload.get("harness_code"),
         )
     except Exception:
         return _fallback_plan(code, agent_enabled=True, reason="Groq returned an invalid plan.")
-
 
 def _fallback_analysis(request: CustomBenchmarkRequest, agent_enabled: bool = False) -> FunctionAnalysis:
     readable_name = request.function_name.replace("_", " ")
@@ -421,27 +463,26 @@ def analyze_function(request: CustomBenchmarkRequest) -> FunctionAnalysis:
         print(response.content)
         print("=======================\n")
 
-        cleaned = (
-            response.content
-            .replace("```json", "")
-            .replace("```", "")
-            .strip()
-        )
+        raw = response.content
+        start = raw.find("{")
+        end = raw.rfind("}")
 
-        payload = json.loads(cleaned)
+        if start == -1 or end == -1:
+            state["analysis"] = _fallback_analysis(request, agent_enabled=True)
+            return state
+
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            state["analysis"] = _fallback_analysis(request, agent_enabled=True)
+            return state
 
         formatted_tc = format_big_o(
-        payload.get(
-            "time_complexity",
-            "Unknown"
+            payload.get("time_complexity", "Unknown")
         )
-    )
 
         formatted_sc = format_big_o(
-            payload.get(
-                "space_complexity",
-                "Unknown"
-            )
+            payload.get("space_complexity", "Unknown")
         )
 
         state["analysis"] = FunctionAnalysis(
@@ -548,19 +589,24 @@ def plan_benchmark(code: str, use_agent: bool = True) -> BenchmarkPlan:
             SystemMessage(
                 content=(
                     "You are a Python benchmark planner. The user will paste a Python file. "
-                    "Choose exactly one callable to benchmark and choose generated arguments. "
-                    "Allowed input_kind values are: list_int, int, string, none, "
-                    "list_int_and_target, two_ints, graph_start_end, signature_args, agent_harness. "
-                    "Return only compact JSON with keys: algorithm_name, function_name, input_kind, "
-                    "reason, harness_code. Do not include markdown. "
-                    "Prefer the main algorithm function over tiny helpers. If a function needs "
-                    "a list and target, use list_int_and_target. If it needs one n-like integer, "
-                    "use int. If it needs text, use string. If it needs graph/start/end, path/"
-                    "start/end, network/start/end, or grid/start/end, use graph_start_end. "
-                    "If none of those shapes fit, use agent_harness and provide harness_code that "
-                    "defines exactly two functions: prepare_input(input_size) and run_target(prepared). "
-                    "prepare_input builds realistic deterministic arguments. run_target calls the selected "
-                    "function/class and returns its result. Use only standard Python and existing code names."
+        "Choose exactly one callable to benchmark and choose generated arguments. "
+        "Allowed input_kind values are: list_int, int, string, none, "
+        "list_int_and_target, two_ints, signature_args, agent_harness, two_strings. "
+        "Return only compact JSON with keys: algorithm_name, function_name, input_kind, "
+        "reason, harness_code. Do not include markdown. "
+        "Prefer the main algorithm function over tiny helpers. "
+        "If a function needs a list and target, use list_int_and_target. "
+        "If it needs one n-like integer, use int. "
+        "If it needs text, use string. "
+        "If it needs two strings (s and t, haystack and needle, text and pattern), use two_strings. "
+        "If it takes a graph, adjacency list, grid, network, or any dict/list of edges as input, "
+        "ALWAYS use agent_harness — never guess the argument count for graph functions. "
+        "If none of those shapes fit exactly, use agent_harness. "
+        "For agent_harness write prepare_input(input_size) that builds realistic deterministic "
+        "arguments matching the EXACT function signature, and run_target(prepared) that unpacks "
+        "and calls the function correctly. "
+        "Use only standard Python and existing code names. "
+        "When in doubt, prefer agent_harness over guessing."
                 )
             ),
             HumanMessage(content=f"Python code:\n{state['code']}"),
@@ -588,16 +634,31 @@ def plan_benchmark(code: str, use_agent: bool = True) -> BenchmarkPlan:
     except Exception as exc:
         return _fallback_plan(code, reason=f"Groq planner failed: {exc}")
 
-    return result.get("plan") or _fallback_plan(code, agent_enabled=True)
+    plan = result.get("plan") or _fallback_plan(
+        code,
+        agent_enabled=True
+    )
+
+    print("\n===== BENCHMARK PLAN =====")
+    print(plan)
+    print("==========================\n")
+
+    return plan
 
 
 def repair_benchmark_plan(code: str, failed_plan: BenchmarkPlan, error: str) -> BenchmarkPlan:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key or ChatGroq is None or StateGraph is None:
-        if "start" in error and "end" in error:
-            repaired = failed_plan.model_copy()
+        repaired = failed_plan.model_copy()
+        if "start" in error and "end" in error and failed_plan.input_kind != "graph_start_end":
             repaired.input_kind = "graph_start_end"
             repaired.reason = "The first benchmark call needed start/end arguments, so the local repair planner used graph_start_end input."
+            repaired.agent_enabled = False
+            return repaired
+
+        if failed_plan.input_kind != "signature_args":
+            repaired.input_kind = "signature_args"
+            repaired.reason = f"The first benchmark call failed with: {error}. The local repair planner is trying signature_args."
             repaired.agent_enabled = False
             return repaired
         return failed_plan

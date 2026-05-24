@@ -195,8 +195,25 @@ def make_input(input_kind: str, input_size: int) -> Any:
         return graph, 0, node_count - 1
     if input_kind in {"agent_harness", "signature_args"}:
         return None
-    return [random.randint(0, 100_000) for _ in range(input_size)]
+    if input_kind == "two_strings":
 
+        letters = string.ascii_lowercase
+
+        s = "".join(
+            random.choice(letters)
+            for _ in range(input_size)
+        )
+
+        t = "".join(
+            random.choice(letters)
+            for _ in range(
+                max(1, input_size // 10)
+            )
+        )
+
+        return s, t
+    return [random.randint(0, 100_000) for _ in range(input_size)]
+    
 
 def _value_for_parameter(name: str, input_size: int) -> Any:
     lowered = name.lower()
