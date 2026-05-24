@@ -143,57 +143,191 @@ def _fallback_plan(code: str, agent_enabled: bool = False, reason: str | None = 
         return BenchmarkPlan(
             algorithm_name="Python function",
             function_name="main",
-            input_kind="signature_args",
+            input_kind="agent_harness",
             reason=reason or "Could not parse code, so the planner used a default entry point.",
             agent_enabled=agent_enabled,
+            harness_code=(
+                "def prepare_input(input_size):\n"
+                "    return input_size\n\n"
+                "def run_target(prepared):\n"
+                "    return main(prepared)\n"
+            ),
         )
 
-    functions = [
+    # Look for public functions AND classes
+    callables = [
         node
         for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not node.name.startswith("_")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not node.name.startswith("_")
     ]
 
-    if not functions:
+    if not callables:
         return BenchmarkPlan(
             algorithm_name="Python function",
             function_name="main",
-            input_kind="signature_args",
-            reason=reason or "No public function was found, so the planner used `main`.",
+            input_kind="agent_harness",
+            reason=reason or "No public function or class was found, so the planner used `main`.",
             agent_enabled=agent_enabled,
+            harness_code=(
+                "def prepare_input(input_size):\n"
+                "    return input_size\n\n"
+                "def run_target(prepared):\n"
+                "    return main(prepared)\n"
+            ),
         )
 
-    target = functions[-1]
+    target = callables[-1]
+    
+    # For classes, generate a harness that instantiates and exercises methods
+    if isinstance(target, ast.ClassDef):
+        # Try to detect __init__ parameters
+        init_params = []
+        for node in target.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
+                init_params = [arg.arg for arg in node.args.args if arg.arg != "self"]
+                break
+        
+        # Build constructor call based on detected params
+        if not init_params:
+            constructor_call = f"{target.name}()"
+        elif len(init_params) == 1 and init_params[0].lower() in {"capacity", "size", "maxsize", "limit"}:
+            constructor_call = f"{target.name}(capacity=min(len(prepared), 1000))"
+        else:
+            # Generic: pass input_size as first arg
+            constructor_call = f"{target.name}()"
+        
+        return BenchmarkPlan(
+            algorithm_name=target.name.replace("_", " ").title(),
+            function_name=target.name,
+            input_kind="agent_harness",
+            reason=reason or f"Selected class `{target.name}` and generated a harness to exercise its methods.",
+            agent_enabled=agent_enabled,
+            harness_code=(
+                "import random\n\n"
+                "def prepare_input(input_size):\n"
+                "    random.seed(42)\n"
+                "    return [(''.join(random.choice('abcdefghijklmnopqrstuvwxyz') for _ in range(10)), "
+                "random.randint(0, 100000)) for _ in range(input_size)]\n\n"
+                "def run_target(prepared):\n"
+                f"    obj = {constructor_call}\n"
+                "    for key, val in prepared:\n"
+                "        if hasattr(obj, 'insert'):\n"
+                "            obj.insert(key)\n"
+                "        if hasattr(obj, 'search'):\n"
+                "            obj.search(key)\n"
+                "        if hasattr(obj, 'put'):\n"
+                "            obj.put(key, val)\n"
+                "        if hasattr(obj, 'get'):\n"
+                "            obj.get(key)\n"
+                "        if hasattr(obj, 'add'):\n"
+                "            obj.add(key)\n"
+                "        if hasattr(obj, 'contains'):\n"
+                "            obj.contains(key)\n"
+            ),
+        )
+    
+    # For functions, use the existing arg-based harness
     arg_names = _function_arg_names(target)
-    input_kind = _infer_input_kind(target.name, arg_names)
+    harness = _build_fallback_harness(target.name, arg_names)
 
     return BenchmarkPlan(
         algorithm_name=target.name.replace("_", " ").title(),
         function_name=target.name,
-        input_kind=input_kind,
-        reason=reason
-        or f"Selected `{target.name}` from the pasted code and generated `{input_kind}` input.",
+        input_kind="agent_harness",
+        reason=reason or f"Selected `{target.name}` from the pasted code and generated a harness.",
         agent_enabled=agent_enabled,
+        harness_code=harness,
     )
 
 
 VALID_INPUT_KINDS = {
     "list_int", "int", "string", "none",
     "list_int_and_target", "two_ints",
-    "graph_start_end", "signature_args", "agent_harness","two_strings",
+    "graph_start_end", "signature_args", "agent_harness", "two_strings",
 }
+
+
+def _build_fallback_harness(function_name: str, arg_names: list[str]) -> str:
+    """Generate a best-effort harness when Groq is unavailable."""
+    if not arg_names:
+        return (
+            "def prepare_input(input_size):\n"
+            "    return None\n\n"
+            f"def run_target(prepared):\n"
+            f"    return {function_name}()\n"
+        )
+
+    # Build per-argument value expressions
+    arg_exprs: list[str] = []
+    for name in arg_names:
+        low = name.lower()
+        if low in {"n", "num", "number", "size", "limit", "count", "k", "capacity"}:
+            arg_exprs.append("input_size")
+        elif low in {"s", "text", "string", "word", "chars", "t", "pattern"}:
+            arg_exprs.append(
+                '"".join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(input_size))'
+            )
+        elif low in {"graph", "network", "grid", "edges"}:
+            arg_exprs.append(
+                "[(i, i+1) for i in range(max(2, min(input_size, 200)) - 1)]"
+            )
+        elif low in {"start", "source", "src"}:
+            arg_exprs.append("0")
+        elif low in {"end", "target_node", "destination", "dest"}:
+            arg_exprs.append("max(1, min(input_size, 200) - 1)")
+        elif low == "target":
+            arg_exprs.append("random.randint(0, input_size * 2)")
+        else:
+            arg_exprs.append("[random.randint(0, 100000) for _ in range(input_size)]")
+
+    if len(arg_exprs) == 1:
+        prepare = f"    return {arg_exprs[0]}\n"
+        call = f"    return {function_name}(prepared)\n"
+    else:
+        items = ",\n        ".join(arg_exprs)
+        prepare = f"    return (\n        {items},\n    )\n"
+        call = f"    return {function_name}(*prepared)\n"
+
+    return (
+        "import random\n\n"
+        "def prepare_input(input_size):\n"
+        "    random.seed(42)\n"
+        f"{prepare}\n"
+        "def run_target(prepared):\n"
+        f"{call}"
+    )
+
+def _strip_fences(code: str | None) -> str | None:
+    """Remove markdown code fences from a string if present."""
+    if not code:
+        return code
+    code = code.strip()
+    if code.startswith("```"):
+        lines = code.splitlines()
+        lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        code = "\n".join(lines).strip()
+    return code or None
+
 
 def _parse_plan(raw_text: str, code: str) -> BenchmarkPlan:
     start = raw_text.find("{")
     end = raw_text.rfind("}")
     if start == -1 or end == -1:
+        print(f"[PARSE ERROR] No JSON found in Groq response")
         return _fallback_plan(code, agent_enabled=True, reason="Groq did not return parseable JSON.")
 
     try:
         payload = json.loads(raw_text[start : end + 1])
         
-        raw_kind = str(payload.get("input_kind") or "list_int")
-        input_kind = raw_kind if raw_kind in VALID_INPUT_KINDS else "signature_args"
+        if "function_name" not in payload:
+            print(f"[PARSE ERROR] Missing 'function_name' in Groq JSON: {payload.keys()}")
+            return _fallback_plan(code, agent_enabled=True, reason="Groq JSON missing function_name.")
+        
+        raw_kind = str(payload.get("input_kind") or "agent_harness")
+        input_kind = raw_kind if raw_kind in VALID_INPUT_KINDS else "agent_harness"
 
         return BenchmarkPlan(
             algorithm_name=str(payload.get("algorithm_name") or "Python function")[:80],
@@ -201,9 +335,13 @@ def _parse_plan(raw_text: str, code: str) -> BenchmarkPlan:
             input_kind=input_kind,
             reason=str(payload.get("reason") or "Groq selected the function and generated input."),
             agent_enabled=True,
-            harness_code=payload.get("harness_code"),
+            harness_code=_strip_fences(payload.get("harness_code")),
         )
-    except Exception:
+    except json.JSONDecodeError as e:
+        print(f"[PARSE ERROR] JSON decode failed: {e}")
+        return _fallback_plan(code, agent_enabled=True, reason="Groq returned invalid JSON.")
+    except Exception as e:
+        print(f"[PARSE ERROR] Unexpected error: {e}")
         return _fallback_plan(code, agent_enabled=True, reason="Groq returned an invalid plan.")
 
 def _fallback_analysis(request: CustomBenchmarkRequest, agent_enabled: bool = False) -> FunctionAnalysis:
@@ -588,30 +726,59 @@ def plan_benchmark(code: str, use_agent: bool = True) -> BenchmarkPlan:
         messages = [
             SystemMessage(
                 content=(
-                    "You are a Python benchmark planner. The user will paste a Python file. "
-        "Choose exactly one callable to benchmark and choose generated arguments. "
-        "Allowed input_kind values are: list_int, int, string, none, "
-        "list_int_and_target, two_ints, signature_args, agent_harness, two_strings. "
-        "Return only compact JSON with keys: algorithm_name, function_name, input_kind, "
-        "reason, harness_code. Do not include markdown. "
-        "Prefer the main algorithm function over tiny helpers. "
-        "If a function needs a list and target, use list_int_and_target. "
-        "If it needs one n-like integer, use int. "
-        "If it needs text, use string. "
-        "If it needs two strings (s and t, haystack and needle, text and pattern), use two_strings. "
-        "If it takes a graph, adjacency list, grid, network, or any dict/list of edges as input, "
-        "ALWAYS use agent_harness — never guess the argument count for graph functions. "
-        "If none of those shapes fit exactly, use agent_harness. "
-        "For agent_harness write prepare_input(input_size) that builds realistic deterministic "
-        "arguments matching the EXACT function signature, and run_target(prepared) that unpacks "
-        "and calls the function correctly. "
-        "Use only standard Python and existing code names. "
-        "When in doubt, prefer agent_harness over guessing."
+                    "You are a Python benchmark planner. The user pastes arbitrary Python code.\n"
+                    "Your job: read the code, understand what it does, pick the best public function "
+                    "OR class to benchmark, and write a self-contained harness that exercises it correctly.\n\n"
+
+                    "ALWAYS use input_kind = \"agent_harness\".\n\n"
+
+                    "Return ONLY compact JSON (no markdown, no extra text) with these keys:\n"
+                    "  algorithm_name  - human-readable name (e.g. \"LRU Cache\", \"Dijkstra's Shortest Path\")\n"
+                    "  function_name   - exact Python name from the code (function or class name)\n"
+                    "  input_kind      - always the string \"agent_harness\"\n"
+                    "  reason          - one sentence explaining your choice\n"
+                    "  harness_code    - plain Python source (NO markdown fences) with two functions:\n"
+                    "      prepare_input(input_size: int) -> any\n"
+                    "          Build realistic, deterministic input that matches the callable's\n"
+                    "          EXACT signature. Scale complexity with input_size.\n"
+                    "          Examples:\n"
+                    "            - sorting/searching: return a random list of input_size ints\n"
+                    "            - graph algorithms: build an adjacency dict/list of ~input_size nodes\n"
+                    "            - string algorithms: return a random string of length input_size\n"
+                    "            - DP / math: return appropriate int or tuple of ints\n"
+                    "            - two-pointer / sliding window: return a list and a target int\n"
+                    "            - Union-Find / DSU: return (n, list_of_edge_tuples)\n"
+                    "            - data structures (LRU, heap, trie): return a list of operations to perform\n"
+                    "          Return a single value or a tuple if the function takes multiple args.\n"
+                    "      run_target(prepared) -> any\n"
+                    "          Unpack prepared and call the function/class with the correct arguments.\n"
+                    "          If prepare_input returns a tuple, unpack it: func(*prepared)\n"
+                    "          For classes: instantiate, then call methods in a loop.\n"
+                    "          Example for LRUCache:\n"
+                    "            cache = LRUCache(capacity)\n"
+                    "            for key, val in operations:\n"
+                    "                cache.put(key, val)\n"
+                    "                cache.get(key)\n\n"
+
+                    "Rules:\n"
+                    "  - harness_code must be plain Python — absolutely no ``` fences\n"
+                    "  - Only import from: random, string, collections, math, itertools, heapq\n"
+                    "  - Do NOT redefine the target function/class inside harness_code\n"
+                    "  - The target is already in scope when harness_code runs\n"
+                    "  - Make prepare_input deterministic (seed random if you use it)\n"
+                    "  - Scale input meaningfully: input_size=100 should be fast, input_size=10000 measurable\n"
+                    "  - If the callable takes no arguments, prepare_input returns None and run_target calls it directly\n"
+                    "  - For classes, the harness should exercise the main operations (put/get, push/pop, insert/search, etc.)\n"
                 )
             ),
             HumanMessage(content=f"Python code:\n{state['code']}"),
         ]
         response = llm.invoke(messages)
+        
+        print("\n===== GROQ PLAN OUTPUT =====")
+        print(response.content)
+        print("============================\n")
+        
         state["plan"] = _parse_plan(str(response.content), state["code"])
         return state
 
@@ -670,13 +837,22 @@ def repair_benchmark_plan(code: str, failed_plan: BenchmarkPlan, error: str) -> 
         messages = [
             SystemMessage(
                 content=(
-                    "You repair Python benchmark call plans after a failed run. Return only JSON "
-                    "with keys: algorithm_name, function_name, input_kind, reason, harness_code. Allowed "
-                    "input_kind values: list_int, int, string, none, list_int_and_target, "
-                    "two_ints, graph_start_end, signature_args, agent_harness. If the error says "
-                    "missing start and end, usually choose graph_start_end for path/graph optimizers. "
-                    "For unusual signatures, choose agent_harness and write prepare_input(input_size) "
-                    "and run_target(prepared)."
+                    "You repair a failed Python benchmark plan. The previous harness crashed.\n"
+                    "Read the error, read the code, and write a corrected harness.\n\n"
+                    "ALWAYS use input_kind = \"agent_harness\".\n\n"
+                    "Return ONLY compact JSON (no markdown) with keys:\n"
+                    "  algorithm_name, function_name, input_kind, reason, harness_code\n\n"
+                    "harness_code must be plain Python (NO ``` fences) with:\n"
+                    "  prepare_input(input_size: int) -> any\n"
+                    "      Build correct input matching the function's EXACT signature.\n"
+                    "      Fix whatever caused the previous error.\n"
+                    "  run_target(prepared) -> any\n"
+                    "      Unpack and call the function correctly.\n\n"
+                    "Rules:\n"
+                    "  - Only import from: random, string, collections, math, itertools, heapq\n"
+                    "  - Do NOT redefine the target function\n"
+                    "  - The target function is already in scope\n"
+                    "  - Seed random for determinism\n"
                 )
             ),
             HumanMessage(

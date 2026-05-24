@@ -24,8 +24,8 @@ class BenchmarkPlan(BaseModel):
     algorithm_name: str
     function_name: str
     input_kind: str = Field(
-        default="list_int",
-        pattern="^(list_int|int|string|none|list_int_and_target|two_ints|graph_start_end|signature_args|agent_harness)$"
+        default="agent_harness",
+        pattern="^(list_int|int|string|none|list_int_and_target|two_ints|graph_start_end|signature_args|agent_harness|two_strings)$"
     )
     reason: str
     agent_enabled: bool = False
@@ -41,7 +41,7 @@ class CustomBenchmarkRequest(BaseModel):
     function_name: str = Field(min_length=1, max_length=80)
     code: str = Field(min_length=1, max_length=30_000)
     input_size: int = Field(ge=1, le=100_000)
-    input_kind: str = Field(default="list_int", pattern="^(list_int|int|string|none|list_int_and_target|two_ints|graph_start_end|signature_args|agent_harness)$")
+    input_kind: str = Field(default="agent_harness", pattern="^(list_int|int|string|none|list_int_and_target|two_ints|graph_start_end|signature_args|agent_harness|two_strings)$")
     timeout_seconds: float = Field(default=5, ge=0.25, le=20)
     analyze_with_agent: bool = True
     harness_code: str | None = Field(default=None, max_length=12_000)

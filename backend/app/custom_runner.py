@@ -107,20 +107,21 @@ def _is_main_guard(test: ast.expr) -> bool:
     return isinstance(right, ast.Constant) and right.value == "__main__"
 
 
-def validate_custom_code(code: str, function_name: str) -> ast.Module:
+def validate_custom_code(code: str, function_name: str, skip_name_check: bool = False) -> ast.Module:
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:
         raise CustomAlgorithmError(f"Syntax error on line {exc.lineno}: {exc.msg}") from exc
 
-    functions = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    if not skip_name_check:
+        functions = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
 
-    if function_name not in functions:
-        raise CustomAlgorithmError(f"Define a function named '{function_name}'.")
+        if function_name not in functions:
+            raise CustomAlgorithmError(f"Define a function named '{function_name}'.")
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -365,7 +366,9 @@ def run_custom_benchmark(
     request: CustomBenchmarkRequest,
     analysis: FunctionAnalysis | None = None,
 ) -> BenchmarkResult:
-    validate_custom_code(request.code, request.function_name)
+    # Skip function name validation for agent_harness — the harness handles any callable
+    skip_name_check = request.input_kind == "agent_harness"
+    validate_custom_code(request.code, request.function_name, skip_name_check=skip_name_check)
     if request.harness_code:
         validate_imports(request.harness_code)
 

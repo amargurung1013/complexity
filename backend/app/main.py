@@ -69,18 +69,17 @@ ALGORITHMS: dict[str, SortAlgorithm] = {
 }
 
 def sanitize_code(code: str) -> str:
-
+    """Strip markdown code fences if present, then return clean source."""
     code = code.strip()
 
     if code.startswith("```"):
-
         lines = code.splitlines()
 
-        # Remove opening fence
+        # Remove opening fence line (e.g. ```python or just ```)
         lines = lines[1:]
 
         # Remove closing fence
-        if lines and lines[-1].strip() == "```":
+        if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
 
         code = "\n".join(lines)
@@ -162,7 +161,7 @@ def _run_planned_benchmark(
         input_kind=plan.input_kind,
         timeout_seconds=request.timeout_seconds,
         analyze_with_agent=request.analyze_with_agent,
-        harness_code=plan.harness_code,
+        harness_code=sanitize_code(plan.harness_code) if plan.harness_code else None,
     )
 
     analysis = analyze_function(custom_request) if request.analyze_with_agent else None

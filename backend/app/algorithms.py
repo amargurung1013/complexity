@@ -125,3 +125,39 @@ def counting_sort(values: list[int]) -> None:
 
 def tim_sort(values: list[int]) -> None:
     values.sort()
+
+
+def UnionFind(n: int, graph: list[tuple[int, int]]) -> list[int]:
+    """Union-Find (Disjoint Set Union) with path compression and union by rank.
+
+    Args:
+        n: Number of nodes (0-indexed).
+        graph: List of (u, v) edges to union together.
+
+    Returns:
+        The parent array representing the final disjoint sets.
+    """
+    parent = list(range(n))
+    rank = [0] * n
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path compression (halving)
+            x = parent[x]
+        return x
+
+    def union(u: int, v: int) -> None:
+        root_u = find(u)
+        root_v = find(v)
+        if root_u == root_v:
+            return
+        if rank[root_u] < rank[root_v]:
+            root_u, root_v = root_v, root_u
+        parent[root_v] = root_u
+        if rank[root_u] == rank[root_v]:
+            rank[root_u] += 1
+
+    for u, v in graph:
+        union(u, v)
+
+    return parent
