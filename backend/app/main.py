@@ -1,3 +1,4 @@
+import math
 import random
 
 from fastapi import FastAPI, HTTPException
@@ -125,28 +126,7 @@ async def analyze_and_benchmark_python(request: AutoBenchmarkRequest) -> Benchma
         clean_code,
         request.analyze_with_agent
     )
-    try:
-        return _run_planned_benchmark(request, plan)
-    except TimeoutError as exc:
-        return _timeout_benchmark_result(request, plan, str(exc))
-    except CustomAlgorithmError as exc:
-        repaired_plan = repair_benchmark_plan(request.code, plan, str(exc))
-        if repaired_plan != plan:
-            try:
-                return _run_planned_benchmark(request, repaired_plan)
-            except TimeoutError as repaired_timeout:
-                return _timeout_benchmark_result(request, repaired_plan, str(repaired_timeout))
-            except CustomAlgorithmError:
-                pass
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"I could not create a runnable benchmark plan for this code yet (Error: {exc}). "
-                "Try adding one public function with clear parameter names like "
-                "`values`, `n`, `text`, or `graph, start, end`."
-            ),
-        ) from exc
+    return _run_groq_analysis(request, plan)
 
 
 def _run_planned_benchmark(
@@ -168,6 +148,75 @@ def _run_planned_benchmark(
     result = run_custom_benchmark(custom_request, analysis)
     result.plan = plan
     return result
+
+
+def _run_groq_analysis(
+    request: AutoBenchmarkRequest,
+    plan: BenchmarkPlan,
+) -> BenchmarkResult:
+    custom_request = CustomBenchmarkRequest(
+        algorithm_name=plan.algorithm_name,
+        function_name=plan.function_name,
+        code=sanitize_code(request.code),
+        input_size=request.input_size,
+        input_kind=plan.input_kind,
+        timeout_seconds=request.timeout_seconds,
+        analyze_with_agent=request.analyze_with_agent,
+        harness_code=sanitize_code(plan.harness_code) if plan.harness_code else None,
+    )
+    analysis = analyze_function(custom_request) if request.analyze_with_agent else None
+    theoretical_value = _theoretical_input_size_value(
+        analysis,
+        request.input_size,
+    )
+
+    if analysis is not None:
+        if not analysis.input_size_result:
+            analysis.input_size_result = (
+                f"For input size {request.input_size}, the dominant-term estimate is "
+                f"about {theoretical_value:g} operations."
+            )
+        analysis.notes = [
+            *analysis.notes,
+            "Result is calculated from Groq's complexity analysis instead of executing a benchmark harness.",
+        ][:5]
+
+    return BenchmarkResult(
+        algorithm=plan.algorithm_name,
+        execution_time_ms=round(theoretical_value, 4),
+        peak_memory_kb=0,
+        input_size=request.input_size,
+        analysis=analysis,
+        plan=plan,
+    )
+
+
+def _theoretical_input_size_value(
+    analysis: FunctionAnalysis | None,
+    input_size: int,
+) -> float:
+    if analysis and analysis.estimated_operations is not None:
+        return max(float(analysis.estimated_operations), 0)
+
+    complexity = (analysis.time_complexity if analysis else "O(n)").lower()
+    n = max(input_size, 1)
+    log_n = max(math.log2(n), 1)
+
+    if "n!" in complexity:
+        return float(math.factorial(min(n, 12)))
+    if "2^n" in complexity or "2ⁿ" in complexity:
+        return float(2 ** min(n, 40))
+    if "n^3" in complexity or "n³" in complexity:
+        return float(n ** 3)
+    if "n^2" in complexity or "n²" in complexity:
+        return float(n ** 2)
+    if "n log" in complexity or "nlog" in complexity or "n*log" in complexity:
+        return float(n * log_n)
+    if "log" in complexity:
+        return float(log_n)
+    if "1" in complexity and "n" not in complexity:
+        return 1.0
+    return float(n)
 
 
 def _timeout_benchmark_result(
@@ -202,4 +251,3 @@ def _timeout_benchmark_result(
             agent_enabled=plan.agent_enabled,
         ),
     )
-

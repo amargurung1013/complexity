@@ -458,36 +458,39 @@ def _parse_analysis(raw_text: str, request: CustomBenchmarkRequest) -> FunctionA
         return _fallback_analysis(request, agent_enabled=True)
 
     fallback = _classify_from_name(request.function_name)
+    time_complexity = format_big_o(str(payload.get("time_complexity") or fallback["time_complexity"]))
+    space_complexity = format_big_o(str(payload.get("space_complexity") or fallback["space_complexity"]))
+    estimated_operations = payload.get("estimated_operations")
+    try:
+        estimated_operations = (
+            float(str(estimated_operations).replace(",", ""))
+            if estimated_operations is not None
+            else None
+        )
+    except ValueError:
+        estimated_operations = None
 
     return FunctionAnalysis(
 
     summary=str(
-        payload.get("function_analysis")
-        or payload.get("summary")
+        payload.get("summary")
+        or payload.get("function_analysis")
         or f"Benchmarks `{request.function_name}`."
     ),
 
-    complexity=str(
-        payload.get("time_complexity")
-        or fallback["time_complexity"]
-    ),
+    complexity=time_complexity,
 
     brief=str(
-        payload.get("function_analysis")
-        or payload.get("brief")
+        payload.get("brief")
+        or payload.get("reason")
         or payload.get("summary")
+        or payload.get("function_analysis")
         or f"Runs `{request.function_name}`."
     ),
 
-    time_complexity=str(
-        payload.get("time_complexity")
-        or fallback["time_complexity"]
-    ),
+    time_complexity=time_complexity,
 
-    space_complexity=str(
-        payload.get("space_complexity")
-        or fallback["space_complexity"]
-    ),
+    space_complexity=space_complexity,
 
     algorithm_family=str(
         payload.get("algorithm_family")
@@ -530,8 +533,15 @@ def _parse_analysis(raw_text: str, request: CustomBenchmarkRequest) -> FunctionA
 
     input_contract=str(
         payload.get("input_contract")
-        or f"Input kind: {request.input_kind}."
+        or f"Selected callable: {request.function_name}; input kind: {request.input_kind}."
     ),
+
+    input_size_result=str(
+        payload.get("input_size_result")
+        or ""
+    ),
+
+    estimated_operations=estimated_operations,
 
     notes=[str(item) for item in payload.get("notes", [])][:5],
 
@@ -557,40 +567,45 @@ def analyze_function(request: CustomBenchmarkRequest) -> FunctionAnalysis:
             SystemMessage(
                 content=(
                     "You are an expert Python algorithm analyst.\n"
-                    "Analyze the provided function deeply.\n"
-                    "Return ONLY valid JSON.\n\n"
-
-                    "JSON format:\n"
-
+                    "The user may paste any Python algorithm code: one function, many functions, "
+                    "a class, helper code, or a callable with any number of parameters.\n"
+                    "Analyze the actual pasted code and selected callable. Do not assume a fixed "
+                    "input shape, a fixed number of variables, or a known LeetCode pattern.\n"
+                    "Return ONLY valid JSON with this exact shape:\n"
                     "{\n"
-                    "  \"function_analysis\": \"Explain what the function does in detail.\",\n"
-                    "  \"algorithm_family\": \"Specific family, e.g. Sliding window, Dynamic programming, Graph traversal\",\n"
-                    "  \"strategy\": \"The invariant or core technique in one precise sentence.\",\n"
+                    "  \"summary\": \"Plain summary of what the algorithm does.\",\n"
                     "  \"time_complexity\": \"Big-O time complexity\",\n"
                     "  \"space_complexity\": \"Big-O space complexity\",\n"
+                    "  \"brief\": \"Short reason for the complexity result.\",\n"
+                    "  \"algorithm_family\": \"Specific family, e.g. Sorting, Dynamic programming, Graph traversal, Data structure\",\n"
+                    "  \"strategy\": \"The core technique or invariant in one precise sentence.\",\n"
                     "  \"stability\": \"Stable, not stable, or not applicable\",\n"
                     "  \"storage_model\": \"How auxiliary memory is used\",\n"
                     "  \"beginner_explanation\": \"Plain language explanation for a beginner\",\n"
                     "  \"interview_explanation\": \"Concise interview answer\",\n"
                     "  \"professor_explanation\": \"Formal CS terminology explanation\",\n"
-                    "  \"reason\": \"Why the complexities are correct\",\n"
+                    "  \"input_size_result\": \"Mathematical result for the provided input size, e.g. n=1000 gives about 1000000 dominant operations\",\n"
+                    "  \"estimated_operations\": 1000000,\n"
                     "  \"notes\": [\"up to five useful notes\"],\n"
                     "  \"suggestions\": [\"up to five improvement or testing suggestions\"]\n"
                     "}\n\n"
-
                     "Rules:\n"
-                    "- Analyze loops\n"
-                    "- Analyze recursion\n"
-                    "- Analyze nested operations\n"
-                    "- Analyze auxiliary memory\n"
+                    "- Infer parameter roles from the code, not from parameter count.\n"
+                    "- Analyze loops, recursion, nested operations, helper calls, and built-in operations.\n"
+                    "- State complexity in terms of meaningful variables such as n, m, V, E, rows, or cols.\n"
+                    "- If several inputs matter, include them in the Big-O expression.\n"
+                    "- For input_size_result, plug the requested input size into the dominant Big-O term.\n"
+                    "- For estimated_operations, return a JSON number for that dominant-term estimate.\n"
+                    "- If complexity depends on data structure operations or unclear helper behavior, say so briefly.\n"
                     "- Return ONLY JSON\n"
                     "- No markdown"
                 )
             ),
             HumanMessage(
                 content=(
-                    f"Function name: {state['function_name']}\n"
-                    f"Generated input kind: {state['input_kind']}\n\n"
+                    f"Selected callable: {state['function_name']}\n"
+                    f"Benchmark input kind: {state['input_kind']}\n\n"
+                    f"Requested input size: {request.input_size}\n\n"
                     f"Code:\n{state['code']}"
                 )
             ),
@@ -601,93 +616,7 @@ def analyze_function(request: CustomBenchmarkRequest) -> FunctionAnalysis:
         print(response.content)
         print("=======================\n")
 
-        raw = response.content
-        start = raw.find("{")
-        end = raw.rfind("}")
-
-        if start == -1 or end == -1:
-            state["analysis"] = _fallback_analysis(request, agent_enabled=True)
-            return state
-
-        try:
-            payload = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            state["analysis"] = _fallback_analysis(request, agent_enabled=True)
-            return state
-
-        formatted_tc = format_big_o(
-            payload.get("time_complexity", "Unknown")
-        )
-
-        formatted_sc = format_big_o(
-            payload.get("space_complexity", "Unknown")
-        )
-
-        state["analysis"] = FunctionAnalysis(
-
-            summary=payload.get(
-                "function_analysis",
-                "No summary"
-            ),
-
-            complexity=payload.get(
-                "time_complexity",
-                "Unknown"
-            ),
-
-            brief=payload.get(
-                "reason",
-                "No analysis"
-            ),
-
-            time_complexity=formatted_tc,
-
-            space_complexity=formatted_sc,
-
-            algorithm_family=payload.get(
-                "algorithm_family",
-                _classify_from_name(request.function_name)["family"]
-            ),
-
-            strategy=payload.get(
-                "strategy",
-                _classify_from_name(request.function_name)["strategy"]
-            ),
-
-            stability=payload.get(
-                "stability",
-                _classify_from_name(request.function_name)["stability"]
-            ),
-
-            storage_model=payload.get(
-                "storage_model",
-                _classify_from_name(request.function_name)["storage_model"]
-            ),
-
-            beginner_explanation=payload.get(
-                "beginner_explanation",
-                ""
-            ),
-
-            interview_explanation=payload.get(
-                "interview_explanation",
-                ""
-            ),
-
-            professor_explanation=payload.get(
-                "professor_explanation",
-                ""
-            ),
-
-            input_contract="Automatically generated benchmark input.",
-
-            notes=[str(item) for item in payload.get("notes", [])][:5],
-
-            suggestions=[str(item) for item in payload.get("suggestions", [])][:5],
-
-            agent_enabled=True
-        )
-
+        state["analysis"] = _parse_analysis(response.content, request)
         return state
 
     graph = StateGraph(AnalyzerState)

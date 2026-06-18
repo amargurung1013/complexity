@@ -15,6 +15,8 @@ class FunctionAnalysis(BaseModel):
     interview_explanation: str = ""
     professor_explanation: str = ""
     input_contract: str
+    input_size_result: str = ""
+    estimated_operations: float | None = None
     notes: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
     agent_enabled: bool = False
